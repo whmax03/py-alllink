@@ -2,13 +2,15 @@
 Excel 读取服务 — 读取 ERP 数据源目录下的国内仓和海外仓库存 Excel 文件。
 
 数据源路径: C:\\Users\\Administrator\\Desktop\\ERP数据源
-  ├── 国内仓/即时库存澳霖汇总.xlsx
-  └── 海外仓/skuList.xlsx
+  ├── 国内仓/skuList.xlsx
+  └── 海外仓/
+      ├── 字米_一件代发库存.xlsx  (Sheet: 一件代发库存)
+      └── 字米_转运.xlsx          (Sheet1: 库存信息, Sheet2: 库存明细信息)
 """
 import os
 import logging
 import openpyxl
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +19,8 @@ ERP_DATA_SOURCE = r"C:\Users\Administrator\Desktop\ERP数据源"
 
 # 文件路径
 DOMESTIC_FILE = os.path.join(ERP_DATA_SOURCE, "国内仓", "skuList.xlsx")
-OVERSEAS_FILE = os.path.join(ERP_DATA_SOURCE, "海外仓", "skuList.xlsx")
+OVERSEAS_FILE = os.path.join(ERP_DATA_SOURCE, "海外仓", "字米_一件代发库存.xlsx")
+OVERSEAS_TRANSIT_FILE = os.path.join(ERP_DATA_SOURCE, "海外仓", "字米_转运.xlsx")
 
 
 def read_domestic_inventory(file_path: str = DOMESTIC_FILE) -> List[Dict[str, Any]]:
@@ -207,3 +210,87 @@ def read_overseas_inventory(file_path: str = OVERSEAS_FILE) -> List[Dict[str, An
     wb.close()
     logger.info("海外仓读取完成，共 %d 条数据", len(rows_data))
     return rows_data
+
+
+def read_overseas_transit_inventory(file_path: str = OVERSEAS_TRANSIT_FILE) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    读取海外仓转运 Excel 文件（字米_转运.xlsx）。
+
+    包含两个 Sheet:
+      - Sheet1「库存信息」: 客户 | sku | 箱唛号 | 库存数量 | 库存 | 冻结 | 国家 | 仓库 | 货架
+      - Sheet2「库存明细信息」: 入库ID | 箱唛号 | sku | 产品数量 | 产品代码 | 状态 | 货架 | 入库时间 | 存放天数
+
+    返回: (库存信息列表, 库存明细列表)
+    """
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"海外仓转运文件不存在: {file_path}")
+
+    logger.info("正在读取海外仓转运文件: %s", file_path)
+    wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+
+    def safe_get(row, idx):
+        if idx < len(row) and row[idx] is not None:
+            val = row[idx]
+            if isinstance(val, str):
+                return val.strip()
+            return val
+        return None
+
+    def to_int(val):
+        if val is None:
+            return None
+        try:
+            return int(float(val))
+        except (ValueError, TypeError):
+            return None
+
+    # ===== Sheet1: 库存信息 =====
+    inventory_data = []
+    if "库存信息" in wb.sheetnames:
+        ws1 = wb["库存信息"]
+        for i, row in enumerate(ws1.iter_rows(values_only=True)):
+            if i == 0:
+                continue
+            if all(cell is None or str(cell).strip() == "" for cell in row):
+                continue
+            inventory_data.append({
+                "customer": safe_get(row, 0),
+                "sku": safe_get(row, 1),
+                "box_mark_no": safe_get(row, 2),
+                "stock_qty": to_int(safe_get(row, 3)),
+                "stock": to_int(safe_get(row, 4)),
+                "frozen": to_int(safe_get(row, 5)),
+                "country": safe_get(row, 6),
+                "warehouse": safe_get(row, 7),
+                "shelf": safe_get(row, 8),
+            })
+        logger.info("转运-库存信息读取完成，共 %d 条数据", len(inventory_data))
+
+    # ===== Sheet2: 库存明细信息 =====
+    detail_data = []
+    if "库存明细信息" in wb.sheetnames:
+        ws2 = wb["库存明细信息"]
+        for i, row in enumerate(ws2.iter_rows(values_only=True)):
+            if i == 0:
+                continue
+            if all(cell is None or str(cell).strip() == "" for cell in row):
+                continue
+            inbound_id = safe_get(row, 0)
+            # 入库ID 是 float，转为字符串去掉小数点
+            if inbound_id is not None:
+                inbound_id = str(int(float(inbound_id)))
+            detail_data.append({
+                "inbound_id": inbound_id,
+                "box_mark_no": safe_get(row, 1),
+                "sku": safe_get(row, 2),
+                "product_qty": to_int(safe_get(row, 3)),
+                "product_code": safe_get(row, 4),
+                "status": safe_get(row, 5),
+                "shelf": safe_get(row, 6),
+                "inbound_date": str(safe_get(row, 7)) if safe_get(row, 7) is not None else None,
+                "storage_days": to_int(safe_get(row, 8)),
+            })
+        logger.info("转运-库存明细读取完成，共 %d 条数据", len(detail_data))
+
+    wb.close()
+    return inventory_data, detail_data

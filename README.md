@@ -1,4 +1,6 @@
-# FastAPI + Supabase Demo uvicorn app.main:app --reload
+# FastAPI + Supabase Demo
+
+[//]: #  uvicorn app.main:app --reload
 
 一个基于 FastAPI 规范分层并连接 Supabase (PostgreSQL) 的现代化后端模版。
 

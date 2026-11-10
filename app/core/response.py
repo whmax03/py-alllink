@@ -45,7 +45,7 @@ class UnifiedResponseMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # 对文档/健康检查等路径直接放行
         if request.url.path in EXCLUDE_PATHS:
-            return await call_next
+            return await call_next(request)
 
         response = await call_next(request)
 

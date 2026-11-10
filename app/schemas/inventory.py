@@ -59,6 +59,50 @@ class OverseasInventoryResponse(OverseasInventoryBase):
         from_attributes = True
 
 
+# ========== 海外仓转运 — 库存信息 ==========
+
+class OverseasTransitInventoryBase(BaseModel):
+    customer: Optional[str] = None
+    sku: Optional[str] = None
+    box_mark_no: Optional[str] = None
+    stock_qty: Optional[int] = None
+    stock: Optional[int] = None
+    frozen: Optional[int] = None
+    country: Optional[str] = None
+    warehouse: Optional[str] = None
+    shelf: Optional[str] = None
+
+
+class OverseasTransitInventoryResponse(OverseasTransitInventoryBase):
+    id: int
+    imported_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ========== 海外仓转运 — 库存明细 ==========
+
+class OverseasTransitDetailBase(BaseModel):
+    inbound_id: Optional[str] = None
+    box_mark_no: Optional[str] = None
+    sku: Optional[str] = None
+    product_qty: Optional[int] = None
+    product_code: Optional[str] = None
+    status: Optional[str] = None
+    shelf: Optional[str] = None
+    inbound_date: Optional[str] = None
+    storage_days: Optional[int] = None
+
+
+class OverseasTransitDetailResponse(OverseasTransitDetailBase):
+    id: int
+    imported_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
 # ========== 导入结果 ==========
 
 class ImportResult(BaseModel):
