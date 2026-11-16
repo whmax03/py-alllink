@@ -12,8 +12,14 @@ SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
 if not SQLALCHEMY_DATABASE_URL:
     raise ValueError("未找到 DATABASE_URL 环境变量，请检查 .env 文件配置")
 
-# 创建 PostgreSQL 引擎
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
+# 创建数据库引擎（MySQL）
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    pool_size=10,
+    max_overflow=20,
+    pool_recycle=3600,
+    pool_pre_ping=True,
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()

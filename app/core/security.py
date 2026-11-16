@@ -1,15 +1,19 @@
 """
-安全工具模块：密码哈希 + JWT 令牌管理
+安全工具模块：密码哈希 + JWT 令牌管理 + 权限依赖
 """
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, List
 
 import bcrypt
 from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.orm import Session
 import os
 from dotenv import load_dotenv
+
+from app.database import get_db
+from app.models.user import User
 
 load_dotenv()
 
@@ -38,10 +42,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """
-    生成 JWT access_token。
-    data 中应包含 "sub"（用户标识，通常为 email）。
-    """
+    """生成 JWT access_token"""
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -51,7 +52,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 
 
 def decode_access_token(token: str) -> dict:
-    """解码 JWT token，返回 payload 字典。如果无效则抛出异常。"""
+    """解码 JWT token"""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         return payload
@@ -63,10 +64,12 @@ def decode_access_token(token: str) -> dict:
         )
 
 
-def get_current_user(token: str = Depends(oauth2_scheme)):
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> User:
     """
-    FastAPI 依赖：从请求头 Authorization: Bearer <token> 中解析用户信息。
-    返回 payload 字典（含 sub, exp 等）。
+    FastAPI 依赖：从 JWT token 解析并返回完整的 User 对象（含 id/name/email）。
     """
     payload = decode_access_token(token)
     email: Optional[str] = payload.get("sub")
@@ -76,4 +79,57 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
             detail="Token 中缺少用户信息",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return payload
+
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户不存在",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user
+
+
+def require_role(role_code: str):
+    """
+    生成一个依赖，要求当前用户拥有指定角色。
+    用法: @router.get("/...", dependencies=[Depends(require_role("admin"))])
+    """
+    def _check(
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        from app.crud import rbac as crud_rbac
+        role_codes, _ = crud_rbac.get_user_permissions(db, current_user.id)
+        if role_code not in role_codes:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"需要 '{role_code}' 角色权限",
+            )
+        return current_user
+
+    return _check
+
+
+def require_permission(perm_code: str):
+    """
+    生成一个依赖，要求当前用户拥有指定权限编码。
+    admin 角色自动拥有所有权限。
+    """
+    def _check(
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ):
+        from app.crud import rbac as crud_rbac
+        role_codes, perm_codes = crud_rbac.get_user_permissions(db, current_user.id)
+        # admin 自动放行
+        if "admin" in role_codes:
+            return current_user
+        if perm_code not in perm_codes:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"缺少权限: {perm_code}",
+            )
+        return current_user
+
+    return _check
