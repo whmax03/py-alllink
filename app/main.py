@@ -69,9 +69,9 @@ init_default_data()
 
 
 app = FastAPI(
-    title="FastAPI + Supabase Production Project",
-    description="一个基于 FastAPI 规范分层并连接 Supabase 的现代化后端模版",
-    version="1.0.0"
+    title="AllLink 后端服务",
+    description="FastAPI + MySQL + RBAC 权限系统 + 多仓库库存管理",
+    version="2.0.0"
 )
 
 # 注册 CORS 中间件（必须放在 UnifiedResponseMiddleware 之前，否则跨域预检请求会被拦截）
@@ -104,4 +104,4 @@ app.include_router(inventory.router)
 
 @app.get("/")
 def root():
-    return {"message": "Welcome to FastAPI backend powered by Supabase!"}
+    return {"message": "Welcome to AllLink Backend v2.0"}
