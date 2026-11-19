@@ -2,17 +2,20 @@
 Excel 读取服务 — 读取 ERP 数据源目录下的所有库存 Excel 文件，适配新表结构。
 
 数据源路径: C:\\Users\\Administrator\\Desktop\\ERP数据源
-  ├── 国内仓/skuList.xlsx          (国内仓 ERP 数据)
+  ├── 国内仓/
+  │   ├── 即时库存澳霖汇总/即时库存澳霖汇总.xlsx   (澳霖国内仓)
+  │   └── 金蝶/金蝶.xlsx                          (金蝶国内仓)
   └── 海外仓/
       ├── Shopee/  (印尼.xls/泰国.xlsx/菲律宾.xlsx/马来.xlsx)
       ├── Tiktok/  (泰国库存.xlsx/马来库存.xlsx)
       ├── eBay/    (AU仓库.xlsx/UK仓库.xlsx)
-      ├── 亚马逊/  (VC海外仓德国站/中邮德国/中邮英国/字米前置转运仓美国/字米美国/派速捷德国)
-      └── 金蝶/    (skuList.xlsx)
+      └── 亚马逊/  (VC海外仓德国站/中邮德国/中邮英国/字米前置转运仓美国/字米美国/派速捷德国)
 
-每个文件读取后返回统一的 inventory 行格式:
-  {warehouse_id, sku, name_cn, name_en, spec, stock_qty, available_qty,
-   frozen_qty, outbound_qty, inbound_qty, raw_data}
+国内仓与海外仓数据结构完全一致：
+  {warehouse: {name, code, type, platform, country, warehouse_type},
+   sku, name_cn, name_en, spec, barcode, product_code,
+   stock_qty, available_qty, frozen_qty, outbound_qty, inbound_qty,
+   inbound_ids?, raw_data}
 """
 import os
 import logging
@@ -135,54 +138,109 @@ def _group_by_sku_merged(parsed: List[dict], key_field: str = "sku") -> List[dic
 
 def read_domestic_inventory() -> List[Dict[str, Any]]:
     """
-    读取国内仓 skuList.xlsx。
-    表头: 物料编码 | 物料名称 | 规格型号 | 计划跟踪号 | 仓库名称 | 库存主单位 | 库存量(主单位)
+    读取国内仓目录下所有子文件夹的 Excel 文件。
+    每个子文件夹名作为 platform（如 "即时库存澳霖汇总" / "金蝶"），
+    文件名（不含扩展名）作为 warehouse_type。
 
-    返回 inventory 行格式，warehouse_info 里有仓库信息供导入时建 warehouse。
+    支持两种表头格式：
+    - 澳霖格式: 物料编码 | 物料名称 | 规格型号 | 计划跟踪号 | 仓库名称 | 库存主单位 | 库存量(主单位)
+    - 金蝶格式: 物料编码 | 物料名称 | 规格型号 | 计划跟踪号 | 仓库名称 | 批号 | 库存主单位 |
+                库存量(主单位) | 可用量(主单位) | 库存状态 | ... | 条码 | CDC
+
+    返回与海外仓完全一致的 inventory 行格式。
     """
-    file_path = os.path.join(ERP_DATA_SOURCE, "国内仓", "skuList.xlsx")
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"国内仓文件不存在: {file_path}")
-
-    logger.info("读取国内仓: %s", file_path)
-    rows = _read_excel(file_path)
-    parsed = _parse_rows(rows)
-
+    base = os.path.join(ERP_DATA_SOURCE, "国内仓")
     result = []
-    for d in parsed:
-        material_code = _to_str(d.get("物料编码"))
-        # 跳过 Excel 合计行
-        if material_code and "合计" in material_code:
+
+    for sub_dir in os.listdir(base) if os.path.isdir(base) else []:
+        sub_path = os.path.join(base, sub_dir)
+        if not os.path.isdir(sub_path):
             continue
-        warehouse_name = _to_str(d.get("仓库名称")) or "国内仓"
-        result.append({
-            "warehouse": {
-                "name": warehouse_name,
-                "code": warehouse_name,
-                "type": "domestic",
-                "platform": "ERP",
-                "country": "中国",
-                "warehouse_type": "skuList",
-            },
-            "sku": _to_str(d.get("物料编码")),
-            "name_cn": _to_str(d.get("物料名称")),
-            "name_en": None,
-            "spec": _to_str(d.get("规格型号")),
-            "stock_qty": _to_float(d.get("库存量(主单位)")) or 0,
-            "available_qty": _to_float(d.get("库存量(主单位)")) or 0,
-            "frozen_qty": 0,
-            "outbound_qty": 0,
-            "inbound_qty": 0,
-            "raw_data": {
-                "material_code": _to_str(d.get("物料编码")),
-                "material_name": _to_str(d.get("物料名称")),
-                "spec_model": _to_str(d.get("规格型号")),
-                "plan_tracking_no": _to_str(d.get("计划跟踪号")),
-                "warehouse_name": warehouse_name,
-                "stock_unit": _to_str(d.get("库存主单位")),
-                "stock_qty": _to_float(d.get("库存量(主单位)")),
-            },
-        })
+        platform = sub_dir  # 子文件夹名作为 platform
+
+        for fname in os.listdir(sub_path):
+            if not fname.endswith((".xlsx", ".xls")):
+                continue
+            if fname.startswith("~$"):
+                continue
+            file_path = os.path.join(sub_path, fname)
+            wh_type = os.path.splitext(fname)[0]
+            logger.info("读取国内仓/%s: %s", sub_dir, fname)
+
+            rows = _read_excel(file_path)
+            parsed = _parse_rows(rows)
+            if not parsed:
+                continue
+
+            first = parsed[0]
+
+            if "可用量(主单位)" in first:
+                # 金蝶格式 — 含可用量、条码等额外字段
+                for d in parsed:
+                    material_code = _to_str(d.get("物料编码"))
+                    # 跳过合计行
+                    if material_code and "合计" in material_code:
+                        continue
+                    # 跳过空行
+                    if not material_code and not d.get("物料名称"):
+                        continue
+
+                    warehouse_name = _to_str(d.get("仓库名称")) or "国内仓"
+                    barcode = _to_str(d.get("条码"))
+                    result.append({
+                        "warehouse": {
+                            "name": f"金蝶-{warehouse_name}",
+                            "code": warehouse_name,
+                            "type": "domestic",
+                            "platform": "金蝶",
+                            "country": "中国",
+                            "warehouse_type": wh_type,
+                        },
+                        "sku": material_code,
+                        "name_cn": _to_str(d.get("物料名称")),
+                        "name_en": None,
+                        "spec": _to_str(d.get("规格型号")),
+                        "barcode": barcode,
+                        "product_code": None,
+                        "stock_qty": _to_float(d.get("库存量(主单位)")) or 0,
+                        "available_qty": _to_float(d.get("可用量(主单位)")) or 0,
+                        "frozen_qty": 0,
+                        "outbound_qty": 0,
+                        "inbound_qty": 0,
+                        "raw_data": {k: _to_str(v) for k, v in d.items()},
+                    })
+            else:
+                # 澳霖格式 — 基础字段
+                for d in parsed:
+                    material_code = _to_str(d.get("物料编码"))
+                    if material_code and "合计" in material_code:
+                        continue
+                    if not material_code and not d.get("物料名称"):
+                        continue
+
+                    warehouse_name = _to_str(d.get("仓库名称")) or "国内仓"
+                    result.append({
+                        "warehouse": {
+                            "name": f"澳霖-{warehouse_name}",
+                            "code": warehouse_name,
+                            "type": "domestic",
+                            "platform": "澳霖",
+                            "country": "中国",
+                            "warehouse_type": wh_type,
+                        },
+                        "sku": material_code,
+                        "name_cn": _to_str(d.get("物料名称")),
+                        "name_en": None,
+                        "spec": _to_str(d.get("规格型号")),
+                        "barcode": None,
+                        "product_code": None,
+                        "stock_qty": _to_float(d.get("库存量(主单位)")) or 0,
+                        "available_qty": _to_float(d.get("库存量(主单位)")) or 0,
+                        "frozen_qty": 0,
+                        "outbound_qty": 0,
+                        "inbound_qty": 0,
+                        "raw_data": {k: _to_str(v) for k, v in d.items()},
+                    })
 
     logger.info("国内仓读取完成: %d 条", len(result))
     return result
@@ -492,70 +550,6 @@ def read_amazon_inventory() -> List[Dict[str, Any]]:
     return result
 
 
-# ========== 海外仓 — 金蝶 ==========
-
-def read_jindie_inventory() -> List[Dict[str, Any]]:
-    """
-    读取金蝶 skuList.xlsx（海外仓/金蝶/ 目录下）。
-    表头: 物料编码 | 物料名称 | 规格型号 | 计划跟踪号 | 仓库名称 | 批号 | 库存主单位 |
-          库存量(主单位) | 可用量(主单位) | 库存状态 | ... | 条码 | CDC
-
-    每个文件作为一个 warehouse_type，文件名去掉扩展名即为 warehouse_type。
-    返回 inventory 行格式，warehouse_info 里有仓库信息供导入时建 warehouse。
-    """
-    base = os.path.join(ERP_DATA_SOURCE, "海外仓", "金蝶")
-    result = []
-
-    for fname in os.listdir(base) if os.path.isdir(base) else []:
-        if not fname.endswith((".xlsx", ".xls")):
-            continue
-        if fname.startswith("~$"):
-            continue
-        file_path = os.path.join(base, fname)
-        wh_type = os.path.splitext(fname)[0]
-        logger.info("读取金蝶: %s", fname)
-
-        rows = _read_excel(file_path)
-        parsed = _parse_rows(rows)
-
-        for d in parsed:
-            material_code = _to_str(d.get("物料编码"))
-            # 跳过合计行
-            if material_code and "合计" in material_code:
-                continue
-            # 跳过空行
-            if not material_code and not d.get("物料名称"):
-                continue
-
-            warehouse_name = _to_str(d.get("仓库名称")) or "金蝶仓"
-            barcode = _to_str(d.get("条码"))
-            result.append({
-                "warehouse": {
-                    "name": f"金蝶-{warehouse_name}",
-                    "code": warehouse_name,
-                    "type": "overseas",
-                    "platform": "金蝶",
-                    "country": "中国",
-                    "warehouse_type": wh_type,
-                },
-                "sku": material_code,
-                "name_cn": _to_str(d.get("物料名称")),
-                "name_en": None,
-                "spec": _to_str(d.get("规格型号")),
-                "barcode": barcode,
-                "product_code": None,
-                "stock_qty": _to_float(d.get("库存量(主单位)")) or 0,
-                "available_qty": _to_float(d.get("可用量(主单位)")) or 0,
-                "frozen_qty": 0,
-                "outbound_qty": 0,
-                "inbound_qty": 0,
-                "raw_data": {k: _to_str(v) for k, v in d.items()},
-            })
-
-    logger.info("金蝶读取完成: %d 条", len(result))
-    return result
-
-
 # ========== 一键读取全部 ==========
 
 def read_all_inventory() -> Dict[str, List[Dict[str, Any]]]:
@@ -574,8 +568,7 @@ def read_all_inventory() -> Dict[str, List[Dict[str, Any]]]:
 
     # 海外仓 — 各平台
     for reader_fn in [read_ebay_inventory, read_shopee_inventory,
-                      read_tiktok_inventory, read_amazon_inventory,
-                      read_jindie_inventory]:
+                      read_tiktok_inventory, read_amazon_inventory]:
         try:
             overseas.extend(reader_fn())
         except Exception as e:

@@ -21,6 +21,7 @@ def import_all(db: Session = Depends(get_db)):
     一键读取 ERP 数据源目录下所有 Excel 文件并导入。
     自动创建仓库记录、商品记录、SKU 映射、库存记录。
     每次导入前清空旧库存数据（保留仓库/商品/SKU映射）。
+    金蝶数据已从海外仓迁移到国内仓，导入前会清理旧的海外仓金蝶仓库记录。
     """
     try:
         data = read_all_inventory()
@@ -30,22 +31,34 @@ def import_all(db: Session = Depends(get_db)):
     # 清空旧库存
     deleted = crud_inventory.delete_all_inventory(db)
 
+    # 清理旧的海外仓金蝶仓库记录（金蝶已迁移到国内仓）
+    from app.models.inventory import Warehouse
+    jindie_overseas_whs = db.query(Warehouse).filter(
+        Warehouse.type == "overseas", Warehouse.platform == "金蝶"
+    ).all()
+    jindie_wh_count = len(jindie_overseas_whs)
+    for wh in jindie_overseas_whs:
+        db.delete(wh)
+    if jindie_wh_count:
+        db.flush()
+
     # 批量导入
     stats = crud_inventory.batch_import(db, data)
 
     return {
         "deleted_old": deleted,
+        "deleted_jindie_warehouses": jindie_wh_count,
         "imported": stats["total"],
         "warehouses": stats["warehouses"],
         "goods": stats["goods"],
         "sku_mappings": stats["sku_mappings"],
-        "message": f"成功导入 {stats['total']} 条库存（仓库 {stats['warehouses']} 个，商品 {stats['goods']} 个）",
+        "message": f"成功导入 {stats['total']} 条库存（仓库 {stats['warehouses']} 个，商品 {stats['goods']} 个，清理旧金蝶海外仓 {jindie_wh_count} 个）",
     }
 
 
 @router.post("/import/domestic", summary="仅导入国内仓库存")
 def import_domestic(db: Session = Depends(get_db)):
-    """仅导入国内仓数据"""
+    """仅导入国内仓数据（金蝶+澳霖），使用高性能批量导入"""
     from app.core.excel_reader import read_domestic_inventory
     try:
         items = read_domestic_inventory()
@@ -54,43 +67,12 @@ def import_domestic(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"读取Excel失败: {str(e)}")
 
-    inventory_rows = []
-    for item in items:
-        wh_info = item.get("warehouse", {})
-        wh = crud_inventory.get_or_create_warehouse(
-            db, name=wh_info.get("name", ""), code=wh_info.get("code"),
-            wh_type="domestic", platform=wh_info.get("platform"),
-            country=wh_info.get("country"),
-            warehouse_type=wh_info.get("warehouse_type"),
-        )
-        goods = crud_inventory.get_or_create_goods(
-            db, name=item.get("name_cn") or item.get("sku") or "",
-            spec=item.get("spec"), en_name=item.get("name_en"),
-        )
-        sku_val = item.get("sku", "")
-        mapping_id = None
-        if sku_val:
-            mapping = crud_inventory.get_or_create_sku_mapping(
-                db, goods_id=goods.id, warehouse_id=wh.id, sku=sku_val,
-            )
-            mapping_id = mapping.id
-        inventory_rows.append({
-            "warehouse_id": wh.id, "sku_mapping_id": mapping_id,
-            "sku": sku_val, "name_cn": item.get("name_cn"),
-            "name_en": item.get("name_en"), "spec": item.get("spec"),
-            "stock_qty": item.get("stock_qty", 0),
-            "available_qty": item.get("available_qty", 0),
-            "frozen_qty": item.get("frozen_qty", 0),
-            "outbound_qty": item.get("outbound_qty", 0),
-            "inbound_qty": item.get("inbound_qty", 0),
-            "raw_data": item.get("raw_data"),
-        })
-
-    imported = crud_inventory.create_inventory_batch(db, inventory_rows)
+    data = {"domestic": items, "overseas": []}
+    stats = crud_inventory.batch_import(db, data)
     return ImportResult(
         warehouse_type="国内仓", total_rows=len(items),
-        imported_rows=imported, skipped_rows=0,
-        message=f"成功导入 {imported} 条",
+        imported_rows=stats["total"], skipped_rows=0,
+        message=f"成功导入 {stats['total']} 条（仓库 {stats['warehouses']} 个，商品 {stats['goods']} 个）",
     )
 
 
@@ -125,11 +107,22 @@ def list_domestic(
     pageNo: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=500),
     sku: Optional[str] = Query(None, description="模糊搜索SKU或名称"),
+    platform: Optional[str] = Query(None, description="按平台筛选: 金蝶/澳霖"),
+    country: Optional[str] = Query(None, description="按国家筛选"),
+    warehouse_type: Optional[str] = Query(None, description="按数据来源文件名筛选"),
     db: Session = Depends(get_db),
 ):
-    """分页查询国内仓库存"""
+    """
+    分页查询国内仓库存，支持以下筛选方式（可组合）：
+    - platform: 按平台筛选（金蝶/澳霖）
+    - country: 按国家筛选
+    - warehouse_type: 按数据来源文件名筛选
+    - sku: 模糊搜索SKU或名称
+    """
     items, total, stock_sum, wh_count = crud_inventory.get_inventory_page(
-        db, pageNo=pageNo, pageSize=pageSize, sku=sku, wh_type="domestic",
+        db, pageNo=pageNo, pageSize=pageSize, sku=sku,
+        wh_type="domestic", platform=platform, country=country,
+        warehouse_type=warehouse_type,
     )
     return {"list": items, "total": total, "totalStock": stock_sum,
             "warehouseCount": wh_count,
