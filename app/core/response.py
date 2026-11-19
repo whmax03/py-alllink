@@ -8,7 +8,11 @@
     "data": <原始返回值>
 }
 
-所有接口失败返回:
+认证相关错误码:
+  10001 — 未提供 token（未登录）
+  10002 — token 已过期或无效
+
+其他失败返回:
 {
     "code": 101,
     "success": false,
@@ -72,6 +76,13 @@ class UnifiedResponseMiddleware(BaseHTTPMiddleware):
 
         # 已经是统一格式的不重复包装（比如异常处理器已处理）
         if isinstance(data, dict) and "code" in data and "success" in data:
+            # 未认证/无权限的响应保持原始 HTTP 状态码（401/403）
+            if not data.get("success") and response.status_code in (401, 403):
+                return Response(
+                    content=json.dumps(data, ensure_ascii=False, default=str),
+                    status_code=response.status_code,
+                    media_type="application/json",
+                )
             return Response(
                 content=json.dumps(data, ensure_ascii=False, default=str),
                 status_code=200,
@@ -82,9 +93,14 @@ class UnifiedResponseMiddleware(BaseHTTPMiddleware):
         if response.status_code < 200 or response.status_code >= 300:
             # 提取 FastAPI 的错误 detail
             message = ""
+            err_code = 101
             if isinstance(data, dict):
                 detail = data.get("detail")
-                if isinstance(detail, str):
+                # 认证错误：detail 是 dict，含 code 和 message
+                if isinstance(detail, dict) and "code" in detail:
+                    err_code = detail["code"]
+                    message = detail.get("message", "")
+                elif isinstance(detail, str):
                     message = detail
                 elif isinstance(detail, list):
                     # Pydantic 校验错误
@@ -100,11 +116,13 @@ class UnifiedResponseMiddleware(BaseHTTPMiddleware):
                 message = str(data)
 
             wrapped = {
-                "code": 101,
+                "code": err_code,
                 "success": False,
                 "message": message or "请求失败",
             }
-            return JSONResponse(content=wrapped, status_code=200)
+            # 401（未认证）和 403（无权限）保持原始 HTTP 状态码，其余统一 200
+            resp_status = response.status_code if response.status_code in (401, 403) else 200
+            return JSONResponse(content=wrapped, status_code=resp_status)
 
         # 成功响应，包装成统一格式
         wrapped = {

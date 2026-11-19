@@ -1,11 +1,15 @@
 """
 安全工具模块：密码哈希 + JWT 令牌管理 + 权限依赖
+
+认证错误码：
+  10001 — 未提供 token（未登录）
+  10002 — token 已过期或无效
 """
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
 import bcrypt
-from jose import JWTError, jwt
+from jose import JWTError, ExpiredSignatureError, jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -20,10 +24,11 @@ load_dotenv()
 # ---------- 配置 ----------
 SECRET_KEY = os.getenv("SECRET_KEY", "change-this-in-production")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))  # 默认 24 小时
 
 # ---------- OAuth2 ----------
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+# auto_error=False：不自动抛 401，让我们自己区分"没传 token"和"token 过期"
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
 
 def hash_password(password: str) -> str:
@@ -52,40 +57,50 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 
 
 def decode_access_token(token: str) -> dict:
-    """解码 JWT token"""
+    """解码 JWT token，区分过期和其他无效情况"""
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload
+        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": 10002, "message": "登录已过期，请重新登录"},
+        )
     except JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token 无效或已过期",
-            headers={"WWW-Authenticate": "Bearer"},
+            detail={"code": 10002, "message": "Token 无效，请重新登录"},
         )
 
 
 def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    token: Optional[str] = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ) -> User:
     """
-    FastAPI 依赖：从 JWT token 解析并返回完整的 User 对象（含 id/name/email）。
+    FastAPI 依赖：从 JWT token 解析并返回完整的 User 对象。
+    - 没传 token → 10001（未登录）
+    - token 过期/无效 → 10002（登录已过期）
     """
+    # 没传 token
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": 10001, "message": "未登录，请先登录"},
+        )
+
     payload = decode_access_token(token)
     email: Optional[str] = payload.get("sub")
     if email is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token 中缺少用户信息",
-            headers={"WWW-Authenticate": "Bearer"},
+            detail={"code": 10002, "message": "Token 信息不完整，请重新登录"},
         )
 
     user = db.query(User).filter(User.email == email).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户不存在",
-            headers={"WWW-Authenticate": "Bearer"},
+            detail={"code": 10002, "message": "用户不存在，请重新登录"},
         )
     return user
 

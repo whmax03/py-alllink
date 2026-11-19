@@ -1,5 +1,6 @@
 """
 库存路由：导入 / 查询 / 汇总
+所有接口均需 JWT 登录，导入类接口额外需要 data:import 权限。
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -7,8 +8,10 @@ from typing import Optional
 
 from app.database import get_db
 from app.core.excel_reader import read_all_inventory
+from app.core.security import get_current_user, require_permission
 from app.crud import inventory as crud_inventory
 from app.schemas.inventory import ImportResult
+from app.models.user import User
 
 router = APIRouter(prefix="/inventory", tags=["库存管理"])
 
@@ -16,7 +19,10 @@ router = APIRouter(prefix="/inventory", tags=["库存管理"])
 # ========== 导入接口 ==========
 
 @router.post("/import-all", summary="一键导入全部库存")
-def import_all(db: Session = Depends(get_db)):
+def import_all(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("data:import")),
+):
     """
     一键读取 ERP 数据源目录下所有 Excel 文件并导入。
     自动创建仓库记录、商品记录、SKU 映射、库存记录。
@@ -57,7 +63,10 @@ def import_all(db: Session = Depends(get_db)):
 
 
 @router.post("/import/domestic", summary="仅导入国内仓库存")
-def import_domestic(db: Session = Depends(get_db)):
+def import_domestic(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("data:import")),
+):
     """仅导入国内仓数据（金蝶+澳霖），使用高性能批量导入"""
     from app.core.excel_reader import read_domestic_inventory
     try:
@@ -86,6 +95,7 @@ def list_inventory(
     warehouse_id: Optional[int] = Query(None, description="按仓库ID筛选"),
     wh_type: Optional[str] = Query(None, description="按仓库类型筛选: domestic/overseas"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """分页查询库存，返回 list + total + totalStock + warehouseCount"""
     items, total, stock_sum, wh_count = crud_inventory.get_inventory_page(
@@ -111,6 +121,7 @@ def list_domestic(
     country: Optional[str] = Query(None, description="按国家筛选"),
     warehouse_type: Optional[str] = Query(None, description="按数据来源文件名筛选"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     分页查询国内仓库存，支持以下筛选方式（可组合）：
@@ -138,6 +149,7 @@ def list_overseas(
     country: Optional[str] = Query(None, description="按国家筛选: 泰国/马来西亚/英国 等"),
     warehouse_type: Optional[str] = Query(None, description="按数据来源文件名筛选: 中邮英国/AU仓库/泰国 等"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     分页查询海外仓库存，支持以下筛选方式（可组合）：
@@ -161,6 +173,7 @@ def list_overseas(
 def list_warehouses(
     wh_type: Optional[str] = Query(None, description="按类型筛选: domestic/overseas"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """获取仓库列表"""
     return crud_inventory.get_warehouses(db, wh_type=wh_type)
@@ -173,6 +186,7 @@ def list_goods(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """获取商品列表"""
     return crud_inventory.get_goods_list(db, skip=skip, limit=limit)
@@ -181,6 +195,9 @@ def list_goods(
 # ========== 汇总 ==========
 
 @router.get("/summary", summary="库存汇总统计")
-def inventory_summary(db: Session = Depends(get_db)):
+def inventory_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """库存汇总：总条数、总库存、仓库数、商品数、国内/海外分别多少"""
     return crud_inventory.get_inventory_summary(db)

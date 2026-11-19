@@ -1,17 +1,25 @@
-from fastapi import APIRouter, HTTPException
+"""
+赛狐 API 路由：token 状态查看 / 手动刷新 / 获取原始 token
+所有接口均需 JWT 登录。
+"""
+from fastapi import APIRouter, HTTPException, Depends
 
 from app.core.sellfox_client import sellfox_token_manager
+from app.core.security import require_role
+from app.models.user import User
 
 router = APIRouter(prefix="/sellfox", tags=["赛狐API"])
 
 
-@router.get("/token", summary="查看token状态")
+@router.get("/token", summary="查看token状态",
+            dependencies=[Depends(require_role("admin"))])
 def get_sellfox_token_info():
     """查看当前赛狐 access_token 的缓存状态（不暴露 token 本身）"""
     return sellfox_token_manager.get_token_info()
 
 
-@router.post("/token/refresh", summary="刷新token")
+@router.post("/token/refresh", summary="刷新token",
+             dependencies=[Depends(require_role("admin"))])
 def refresh_sellfox_token():
     """手动使 access_token 失效并重新获取"""
     sellfox_token_manager.invalidate()
@@ -26,7 +34,8 @@ def refresh_sellfox_token():
     }
 
 
-@router.get("/token/raw", summary="获取token字符串")
+@router.get("/token/raw", summary="获取token字符串",
+            dependencies=[Depends(require_role("admin"))])
 def get_sellfox_token_raw():
     """获取实际的 access_token 字符串（仅供调试）"""
     try:
