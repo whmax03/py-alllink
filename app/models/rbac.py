@@ -2,9 +2,10 @@
 RBAC 权限模型：角色 + 权限 + 关联表
 
 权限类型:
-  - page: 页面权限（控制能否访问某个页面路由）
-  - tab:  Tab显示权限（控制页面内某个标签页是否显示）
-  - data: 数据权限（控制能看到哪些数据范围）
+  - page:     页面权限（控制能否访问某个页面路由）
+  - tab:      Tab显示权限（控制页面内某个标签页是否显示）
+  - platform: 平台权限（控制可查看哪些数据平台，如 金蝶/亚马逊）
+  - data:     数据权限（控制其他数据范围操作，如导入/导出）
 """
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Table
 from sqlalchemy.orm import relationship
@@ -37,15 +38,15 @@ class Role(Base):
 class Permission(Base):
     """
     权限表
-    type: page / tab / data
-    code: 权限编码，如 page:inventory:domestic、tab:transit 等
+    type: page / tab / platform / data
+    code: 权限编码，如 page:inventory:domestic、tab:transit、platform:金蝶 等
     """
     __tablename__ = "permissions"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     name = Column(String(100), nullable=False, comment="权限名称")
     code = Column(String(100), unique=True, index=True, nullable=False, comment="权限编码")
-    type = Column(String(20), nullable=False, comment="权限类型: page/tab/data")
+    type = Column(String(20), nullable=False, comment="权限类型: page/tab/platform/data")
     description = Column(String(200), nullable=True, comment="权限描述")
     created_at = Column(DateTime, default=datetime.utcnow, comment="创建时间")
 

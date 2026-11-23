@@ -57,6 +57,20 @@ class ChangePassword(BaseModel):
         return v
 
 
+class PasswordReset(BaseModel):
+    """管理员重置密码请求（账号管理页）"""
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, v):
+        if len(v) < 6:
+            raise ValueError("密码长度不能少于 6 位")
+        if len(v.encode("utf-8")) > 72:
+            raise ValueError("密码过长，请控制在 72 字节以内（中文约 24 个字）")
+        return v
+
+
 class TokenResponse(BaseModel):
     """登录成功返回的 token 信息"""
     access_token: str

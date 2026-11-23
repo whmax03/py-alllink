@@ -47,6 +47,13 @@ def init_default_data():
             {"name": "海外仓Tab", "code": "tab:overseas", "type": "tab"},
             {"name": "转运库存Tab", "code": "tab:transit", "type": "tab"},
             {"name": "转运明细Tab", "code": "tab:transit_detail", "type": "tab"},
+            # 平台权限（控制角色可查看的数据平台，与库存页筛选平台一致）
+            {"name": "金蝶平台", "code": "platform:金蝶", "type": "platform"},
+            {"name": "澳霖平台", "code": "platform:澳霖", "type": "platform"},
+            {"name": "亚马逊平台", "code": "platform:亚马逊", "type": "platform"},
+            {"name": "eBay平台", "code": "platform:eBay", "type": "platform"},
+            {"name": "Shopee平台", "code": "platform:Shopee", "type": "platform"},
+            {"name": "Tiktok平台", "code": "platform:Tiktok", "type": "platform"},
             # 数据权限
             {"name": "导入数据权限", "code": "data:import", "type": "data"},
             {"name": "导出数据权限", "code": "data:export", "type": "data"},
