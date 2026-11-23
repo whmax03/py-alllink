@@ -161,7 +161,7 @@ def get_inventory_page(db: Session, pageNo: int = 1, pageSize: int = 20,
                        wh_type: Optional[str] = None,
                        platform: Optional[str] = None,
                        country: Optional[str] = None,
-                       warehouse_type: Optional[str] = None) -> Tuple[List[dict], int, float, int]:
+                       warehouse_type: Optional[str] = None) -> Tuple[List[dict], int, float, int, int]:
     """
     分页查询库存。
     sku: 模糊搜索 SKU 或中英文名称
@@ -170,7 +170,7 @@ def get_inventory_page(db: Session, pageNo: int = 1, pageSize: int = 20,
     platform: 按平台筛选（eBay/Shopee/Tiktok/亚马逊/金蝶/ERP）
     country: 按国家筛选
     warehouse_type: 按数据来源文件名筛选（如 中邮英国/AU仓库/泰国 等）
-    返回: (数据列表, 总条数, 库存数量总和, 去重仓库数)
+    返回: (数据列表, 总条数, 库存数量总和, 去重仓库数, 去重SKU数)
     """
     query = db.query(Inventory).options(joinedload(Inventory.warehouse))
 
@@ -199,8 +199,9 @@ def get_inventory_page(db: Session, pageNo: int = 1, pageSize: int = 20,
     total = query.count()
     stock_sum = query.with_entities(func.coalesce(func.sum(Inventory.stock_qty), 0)).scalar()
     warehouse_count = query.with_entities(func.count(func.distinct(Inventory.warehouse_id))).scalar() or 0
+    sku_count = query.with_entities(func.count(func.distinct(Inventory.sku))).scalar() or 0
     items = query.order_by(Inventory.id.desc()).offset((pageNo - 1) * pageSize).limit(pageSize).all()
-    return [serialize_inventory(i) for i in items], total, float(stock_sum or 0), int(warehouse_count)
+    return [serialize_inventory(i) for i in items], total, float(stock_sum or 0), int(warehouse_count), int(sku_count)
 
 
 def delete_inventory_by_warehouse(db: Session, warehouse_id: int) -> int:

@@ -97,8 +97,8 @@ def list_inventory(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """分页查询库存，返回 list + total + totalStock + warehouseCount"""
-    items, total, stock_sum, wh_count = crud_inventory.get_inventory_page(
+    """分页查询库存，返回 list + total + totalStock + warehouseCount + totalSkuNum"""
+    items, total, stock_sum, wh_count, sku_num = crud_inventory.get_inventory_page(
         db, pageNo=pageNo, pageSize=pageSize, sku=sku,
         warehouse_id=warehouse_id, wh_type=wh_type,
     )
@@ -107,6 +107,7 @@ def list_inventory(
         "total": total,
         "totalStock": stock_sum,
         "warehouseCount": wh_count,
+        "totalSkuNum": sku_num,
         "pageNo": pageNo,
         "pageSize": pageSize,
     }
@@ -130,13 +131,13 @@ def list_domestic(
     - warehouse_type: 按数据来源文件名筛选
     - sku: 模糊搜索SKU或名称
     """
-    items, total, stock_sum, wh_count = crud_inventory.get_inventory_page(
+    items, total, stock_sum, wh_count, sku_num = crud_inventory.get_inventory_page(
         db, pageNo=pageNo, pageSize=pageSize, sku=sku,
         wh_type="domestic", platform=platform, country=country,
         warehouse_type=warehouse_type,
     )
     return {"list": items, "total": total, "totalStock": stock_sum,
-            "warehouseCount": wh_count,
+            "warehouseCount": wh_count, "totalSkuNum": sku_num,
             "pageNo": pageNo, "pageSize": pageSize}
 
 
@@ -157,13 +158,13 @@ def list_overseas(
     - warehouse_type: 按数据来源文件名筛选（如 "中邮英国" 对应 海外仓/亚马逊/中邮英国.xlsx）
     - sku: 模糊搜索SKU或名称
     """
-    items, total, stock_sum, wh_count = crud_inventory.get_inventory_page(
+    items, total, stock_sum, wh_count, sku_num = crud_inventory.get_inventory_page(
         db, pageNo=pageNo, pageSize=pageSize, sku=sku,
         wh_type="overseas", platform=platform, country=country,
         warehouse_type=warehouse_type,
     )
     return {"list": items, "total": total, "totalStock": stock_sum,
-            "warehouseCount": wh_count,
+            "warehouseCount": wh_count, "totalSkuNum": sku_num,
             "pageNo": pageNo, "pageSize": pageSize}
 
 
