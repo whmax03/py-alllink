@@ -10,6 +10,7 @@ from app.database import get_db
 from app.core.excel_reader import read_all_inventory
 from app.core.security import get_current_user, require_permission
 from app.crud import inventory as crud_inventory
+from app.crud import rbac as crud_rbac
 from app.schemas.inventory import ImportResult
 from app.models.user import User
 
@@ -97,10 +98,12 @@ def list_inventory(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """分页查询库存，返回 list + total + totalStock + warehouseCount + totalSkuNum"""
+    """分页查询库存，返回 list + total + totalStock + warehouseCount + totalSkuNum（按角色平台权限过滤）"""
+    allowed = crud_rbac.get_visible_platforms(db, current_user.id)
     items, total, stock_sum, wh_count, sku_num = crud_inventory.get_inventory_page(
         db, pageNo=pageNo, pageSize=pageSize, sku=sku,
         warehouse_id=warehouse_id, wh_type=wh_type,
+        allowed_platforms=allowed,
     )
     return {
         "list": items,
@@ -130,11 +133,13 @@ def list_domestic(
     - country: 按国家筛选
     - warehouse_type: 按数据来源文件名筛选
     - sku: 模糊搜索SKU或名称
+    返回数据按当前用户角色平台权限强制过滤。
     """
+    allowed = crud_rbac.get_visible_platforms(db, current_user.id)
     items, total, stock_sum, wh_count, sku_num = crud_inventory.get_inventory_page(
         db, pageNo=pageNo, pageSize=pageSize, sku=sku,
         wh_type="domestic", platform=platform, country=country,
-        warehouse_type=warehouse_type,
+        warehouse_type=warehouse_type, allowed_platforms=allowed,
     )
     return {"list": items, "total": total, "totalStock": stock_sum,
             "warehouseCount": wh_count, "totalSkuNum": sku_num,
@@ -157,11 +162,13 @@ def list_overseas(
     - platform + country: 按平台和国家组合筛选
     - warehouse_type: 按数据来源文件名筛选（如 "中邮英国" 对应 海外仓/亚马逊/中邮英国.xlsx）
     - sku: 模糊搜索SKU或名称
+    返回数据按当前用户角色平台权限强制过滤。
     """
+    allowed = crud_rbac.get_visible_platforms(db, current_user.id)
     items, total, stock_sum, wh_count, sku_num = crud_inventory.get_inventory_page(
         db, pageNo=pageNo, pageSize=pageSize, sku=sku,
         wh_type="overseas", platform=platform, country=country,
-        warehouse_type=warehouse_type,
+        warehouse_type=warehouse_type, allowed_platforms=allowed,
     )
     return {"list": items, "total": total, "totalStock": stock_sum,
             "warehouseCount": wh_count, "totalSkuNum": sku_num,
@@ -176,8 +183,9 @@ def list_warehouses(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """获取仓库列表"""
-    return crud_inventory.get_warehouses(db, wh_type=wh_type)
+    """获取仓库列表（按当前用户平台权限过滤，仅返回可见平台的仓库）"""
+    allowed = crud_rbac.get_visible_platforms(db, current_user.id)
+    return crud_inventory.get_warehouses(db, wh_type=wh_type, allowed_platforms=allowed)
 
 
 # ========== 商品列表 ==========
@@ -200,5 +208,6 @@ def inventory_summary(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """库存汇总：总条数、总库存、仓库数、商品数、国内/海外分别多少"""
-    return crud_inventory.get_inventory_summary(db)
+    """库存汇总：总条数、总库存、仓库数、商品数、国内/海外分别多少（按角色平台权限过滤）"""
+    allowed = crud_rbac.get_visible_platforms(db, current_user.id)
+    return crud_inventory.get_inventory_summary(db, allowed_platforms=allowed)

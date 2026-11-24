@@ -35,26 +35,31 @@ def init_default_data():
             db.refresh(viewer)
 
         # 创建默认权限（如果不存在）
+        # 权限树结构（前端按菜单树展示）：
+        #   库存管理：页面 + 国内仓Tab/海外仓Tab + 各平台
+        #   基础管理：账号管理(新增/重置密码/删除) + 权限管理(页面)
         default_permissions = [
             # 页面权限
-            {"name": "国内仓库存页面", "code": "page:inventory:domestic", "type": "page"},
-            {"name": "海外仓库存页面", "code": "page:inventory:overseas", "type": "page"},
-            {"name": "转运库存页面", "code": "page:inventory:transit", "type": "page"},
-            {"name": "用户管理页面", "code": "page:users", "type": "page"},
-            {"name": "权限管理页面", "code": "page:rbac", "type": "page"},
-            # Tab 显示权限
+            {"name": "库存管理页面", "code": "page:inventory", "type": "page"},
             {"name": "国内仓Tab", "code": "tab:domestic", "type": "tab"},
             {"name": "海外仓Tab", "code": "tab:overseas", "type": "tab"},
             {"name": "转运库存Tab", "code": "tab:transit", "type": "tab"},
             {"name": "转运明细Tab", "code": "tab:transit_detail", "type": "tab"},
-            # 平台权限（控制角色可查看的数据平台，与库存页筛选平台一致）
+            # 平台权限（挂在库存管理树下）
             {"name": "金蝶平台", "code": "platform:金蝶", "type": "platform"},
             {"name": "澳霖平台", "code": "platform:澳霖", "type": "platform"},
             {"name": "亚马逊平台", "code": "platform:亚马逊", "type": "platform"},
             {"name": "eBay平台", "code": "platform:eBay", "type": "platform"},
             {"name": "Shopee平台", "code": "platform:Shopee", "type": "platform"},
             {"name": "Tiktok平台", "code": "platform:Tiktok", "type": "platform"},
-            # 数据权限
+            # 基础管理树：账号管理操作权限
+            {"name": "账号管理页面", "code": "page:users", "type": "page"},
+            {"name": "新增账号权限", "code": "action:users:create", "type": "action"},
+            {"name": "重置密码权限", "code": "action:users:reset_password", "type": "action"},
+            {"name": "删除账号权限", "code": "action:users:delete", "type": "action"},
+            # 基础管理树：权限管理
+            {"name": "权限管理页面", "code": "page:rbac", "type": "page"},
+            # 数据权限（通用导入导出，暂不在树上展示）
             {"name": "导入数据权限", "code": "data:import", "type": "data"},
             {"name": "导出数据权限", "code": "data:export", "type": "data"},
         ]

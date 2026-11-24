@@ -33,8 +33,12 @@ def get_or_create_warehouse(db: Session, name: str, code: str = None,
     return wh
 
 
-def get_warehouses(db: Session, wh_type: Optional[str] = None) -> List[Warehouse]:
+def get_warehouses(db: Session, wh_type: Optional[str] = None,
+                   allowed_platforms: Optional[List[str]] = None) -> List[Warehouse]:
+    """获取仓库列表。allowed_platforms: 平台白名单（None=不过滤；list=仅这些平台的仓库）"""
     query = db.query(Warehouse)
+    if allowed_platforms is not None:
+        query = query.filter(Warehouse.platform.in_(allowed_platforms))
     if wh_type:
         query = query.filter(Warehouse.type == wh_type)
     return query.all()
@@ -161,7 +165,9 @@ def get_inventory_page(db: Session, pageNo: int = 1, pageSize: int = 20,
                        wh_type: Optional[str] = None,
                        platform: Optional[str] = None,
                        country: Optional[str] = None,
-                       warehouse_type: Optional[str] = None) -> Tuple[List[dict], int, float, int, int]:
+                       warehouse_type: Optional[str] = None,
+                       allowed_platforms: Optional[List[str]] = None
+                       ) -> Tuple[List[dict], int, float, int, int]:
     """
     分页查询库存。
     sku: 模糊搜索 SKU 或中英文名称
@@ -170,14 +176,19 @@ def get_inventory_page(db: Session, pageNo: int = 1, pageSize: int = 20,
     platform: 按平台筛选（eBay/Shopee/Tiktok/亚马逊/金蝶/ERP）
     country: 按国家筛选
     warehouse_type: 按数据来源文件名筛选（如 中邮英国/AU仓库/泰国 等）
+    allowed_platforms: 数据权限平台白名单（None=admin不过滤；list=仅这些平台，空list=无权限）
     返回: (数据列表, 总条数, 库存数量总和, 去重仓库数, 去重SKU数)
     """
     query = db.query(Inventory).options(joinedload(Inventory.warehouse))
 
-    # 需要 join Warehouse 的筛选条件
-    needs_join = wh_type or platform or country or warehouse_type
+    # join 条件（含数据权限白名单在内只 join 一次）
+    needs_join = wh_type or platform or country or warehouse_type or (allowed_platforms is not None)
     if needs_join:
         query = query.join(Warehouse)
+
+    # 数据权限：平台白名单强制过滤（后端强制，前端传参只能叠加缩小不能扩大）
+    if allowed_platforms is not None:
+        query = query.filter(Warehouse.platform.in_(allowed_platforms))
 
     if sku:
         query = query.filter(
@@ -222,14 +233,36 @@ def delete_all_inventory(db: Session) -> int:
 
 # ========== 汇总 ==========
 
-def get_inventory_summary(db: Session) -> dict:
-    """库存汇总统计"""
-    total_items = db.query(Inventory).count()
-    total_stock = db.query(func.coalesce(func.sum(Inventory.stock_qty), 0)).scalar()
-    total_warehouses = db.query(Warehouse).count()
-    total_goods = db.query(Goods).count()
-    domestic_count = db.query(Inventory).join(Warehouse).filter(Warehouse.type == "domestic").count()
-    overseas_count = db.query(Inventory).join(Warehouse).filter(Warehouse.type == "overseas").count()
+def get_inventory_summary(db: Session, allowed_platforms: Optional[List[str]] = None) -> dict:
+    """
+    库存汇总统计。
+    allowed_platforms: 平台白名单（None=不过滤即 admin；list=仅统计这些平台，空list=全部为0）
+    """
+    platform_filter = Warehouse.platform.in_(allowed_platforms) if allowed_platforms is not None else None
+
+    def q(join_wh: bool = False):
+        query = db.query(Inventory)
+        if platform_filter is not None:
+            query = query.join(Warehouse).filter(platform_filter)  # join+权限一次完成
+        elif join_wh:
+            query = query.join(Warehouse)
+        return query
+
+    total_items = q().count()
+    total_stock = q().with_entities(func.coalesce(func.sum(Inventory.stock_qty), 0)).scalar()
+    # 可见仓库数/商品数（与库存行同口径：平台范围内出现过的仓库/商品）
+    if platform_filter is not None:
+        total_warehouses = (
+            q().with_entities(func.count(func.distinct(Inventory.warehouse_id))).scalar() or 0
+        )
+        total_goods = (
+            q().with_entities(func.count(func.distinct(Inventory.sku_mapping_id))).scalar() or 0
+        )
+    else:
+        total_warehouses = db.query(Warehouse).count()
+        total_goods = db.query(Goods).count()
+    domestic_count = q(True).filter(Warehouse.type == "domestic").count()
+    overseas_count = q(True).filter(Warehouse.type == "overseas").count()
     return {
         "total_items": total_items,
         "total_stock": float(total_stock or 0),

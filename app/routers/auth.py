@@ -45,9 +45,10 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
     if not db_user:
         raise HTTPException(status_code=401, detail="邮箱或密码错误")
 
-    # 获取用户角色
+    # 获取用户角色与权限（admin 角色直接返回全部权限码）
     roles = crud_rbac.get_user_roles(db, db_user.id)
     role_codes = [r.code for r in roles]
+    _, perm_codes = crud_rbac.get_user_permissions(db, db_user.id)
 
     # 生成 JWT token（角色信息写入 token）
     access_token = create_access_token(
@@ -62,6 +63,7 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
             "name": db_user.name,
             "email": db_user.email,
             "roles": role_codes,
+            "permissions": perm_codes,
         },
     }
 

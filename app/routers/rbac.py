@@ -1,13 +1,14 @@
 """
 RBAC 路由：角色管理 / 权限管理 / 用户角色分配 / 当前用户权限
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
 from app.database import get_db
 from app.core.security import get_current_user, require_role
 from app.models.user import User
+from app.models.rbac import Role, Permission
 from app.schemas.rbac import (
     RoleCreate, RoleResponse, RoleWithPermissions,
     PermissionCreate, PermissionResponse,
@@ -95,26 +96,19 @@ def create_role(
     }
 
 
-@router.get("/roles", summary="角色列表（含权限）")
+@router.get("/roles", summary="角色列表（含权限与绑定账号数，分页）")
 def list_roles(
+    pageNo: int = Query(1, ge=1, description="页码，从1开始"),
+    pageSize: int = Query(100, ge=1, le=500, description="每页条数，默认100基本等同全量"),
+    keyword: Optional[str] = Query(None, description="按名称/编码模糊过滤"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """获取所有角色及其权限"""
-    roles = crud_rbac.get_roles(db)
-    result = []
-    for r in roles:
-        result.append({
-            "id": r.id,
-            "name": r.name,
-            "code": r.code,
-            "description": r.description,
-            "permissions": [
-                {"id": p.id, "name": p.name, "code": p.code, "type": p.type}
-                for p in r.permissions
-            ],
-        })
-    return result
+    """
+    分页查询角色及其权限，含每个角色绑定的账号数（角色管理页绑定账号列）。
+    返回 list + total + pageNo + pageSize。
+    """
+    return crud_rbac.get_roles_page(db, pageNo=pageNo, pageSize=pageSize, keyword=keyword)
 
 
 @router.delete("/roles/{role_id}", summary="删除角色")
@@ -123,7 +117,12 @@ def delete_role(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role("admin")),
 ):
-    """删除角色（仅 admin）"""
+    """删除角色（仅 admin；admin 角色本身禁止删除，同时清理用户角色关联）"""
+    role = db.query(Role).filter(Role.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    if role.code == "admin":
+        raise HTTPException(status_code=400, detail="admin 角色禁止删除")
     if not crud_rbac.delete_role(db, role_id):
         raise HTTPException(status_code=404, detail="角色不存在")
     return {"message": "删除成功"}
@@ -135,7 +134,9 @@ def assign_permissions(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role("admin")),
 ):
-    """给角色重新分配权限（覆盖式，仅 admin）"""
+    """给角色重新分配权限（覆盖式，仅 admin）；admin 角色拥有全部权限，禁止修改"""
+    if data.role_code == "admin":
+        raise HTTPException(status_code=400, detail="admin 角色拥有全部权限，禁止修改")
     try:
         role = crud_rbac.assign_permissions_to_role(db, data.role_code, data.permission_codes)
     except ValueError as e:
@@ -145,6 +146,95 @@ def assign_permissions(
         "permissions": [p.code for p in role.permissions],
     }
 
+
+@router.put("/roles/{role_id}", summary="更新角色（名称/简称/描述）")
+def update_role(
+    role_id: int,
+    data: RoleCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("admin")),
+):
+    """更新角色名称/简称/描述（仅 admin；admin 角色本身禁止修改）"""
+    role = db.query(Role).filter(Role.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    if role.code == "admin":
+        raise HTTPException(status_code=400, detail="admin 角色禁止修改")
+    try:
+        result = crud_rbac.update_role(db, role_id, data.name, data.code, data.description)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "id": result.id,
+        "name": result.name,
+        "code": result.code,
+        "description": result.description,
+        "permissions": [p.code for p in result.permissions],
+    }
+
+
+@router.get("/roles/{role_id}/users", summary="查询角色绑定的账号列表")
+def get_role_users(
+    role_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("admin")),
+):
+    """
+    查询绑定某角色的账号列表（仅 admin；角色管理页点击绑定账号数量弹窗）。
+    输出白名单字段（不含密码哈希等敏感信息）。
+    """
+    role = db.query(Role).filter(Role.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="角色不存在")
+    users = crud_rbac.get_role_users(db, role_id)
+    return {
+        "role": {"id": role.id, "name": role.name, "code": role.code},
+        "total": len(users),
+        "users": [
+            {
+                "id": u.id,
+                "name": u.name,
+                "email": u.email,
+                "roles": [r.code for r in crud_rbac.get_user_roles(db, u.id)],
+            }
+            for u in users
+        ],
+    }
+
+
+@router.get("/roles/{role_id}/permissions", summary="查询角色权限详情")
+def get_role_permissions_detail(
+    role_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    查询某个角色的权限详情（权限管理页「权限详情」面板）：
+    - 角色基本信息（id/name/code/description）
+    - 权限明细列表（含 name/code/type）
+    - admin 角色返回全库权限（与登录/me 口径一致）
+    """
+    role = db.query(Role).filter(Role.id == role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="角色不存在")
+
+    if role.code == "admin":
+        # admin 拥有全部权限（免维护口径）
+        perms = db.query(Permission).all()
+    else:
+        perms = role.permissions
+
+    return {
+        "id": role.id,
+        "name": role.name,
+        "code": role.code,
+        "description": role.description,
+        "is_admin": role.code == "admin",
+        "permissions": [
+            {"id": p.id, "name": p.name, "code": p.code, "type": p.type}
+            for p in perms
+        ],
+    }
 
 # ========== 用户角色分配 ==========
 
