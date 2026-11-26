@@ -7,7 +7,7 @@
   3. sku_mapping — SKU 映射表（一个商品 ↔ 多个仓库的不同 SKU）
   4. inventory  — 库存子表（关联仓库 + SKU + 库存数据，靠 warehouse_id 外键）
 """
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import json
@@ -110,6 +110,12 @@ class Inventory(Base):
     # 入库ID列表（部分仓库如字米美国一个SKU对应多个入库批次）
     inbound_ids = Column(Text, nullable=True, comment="入库ID列表 JSON 数组")
 
+    # 责任人（多人用+连接；来自 责任人对应关系Excel，经 sku_owner_map 回填）
+    owner = Column(String(500), nullable=True, comment="责任人（多人用+连接）")
+
+    # 备注（用户手工维护；重新导入时按 仓库+SKU 相同回填保留）
+    remark = Column(String(500), nullable=True, comment="备注（导入时按仓库+SKU保留）")
+
     @property
     def inbound_id_list(self) -> list:
         """入库ID列表（自动解析 JSON 字符串为 list）"""
@@ -128,3 +134,22 @@ class Inventory(Base):
 
     # 关联
     warehouse = relationship("Warehouse", back_populates="inventories")
+
+
+class SkuOwnerMap(Base):
+    """
+    SKU→责任人映射表（责任人对应关系Excel，当前仅亚马逊平台）。
+    - sku 列同时存品牌 SKU 和 ASIN（都作为匹配键）
+    - 导入清空重建库存后，由 apply_owner_backfill 按本表自动回填 inventory.owner
+    """
+    __tablename__ = "sku_owner_map"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    platform = Column(String(50), nullable=False, default="亚马逊", comment="平台（预留多平台扩展）")
+    sku = Column(String(200), nullable=False, index=True, comment="品牌SKU 或 ASIN（匹配键）")
+    owner = Column(String(500), nullable=False, comment="责任人（多人用+连接）")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment="更新时间")
+
+    __table_args__ = (
+        UniqueConstraint("platform", "sku", name="uq_platform_sku"),
+    )

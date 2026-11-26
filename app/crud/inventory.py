@@ -140,6 +140,8 @@ def serialize_inventory(item: Inventory) -> Dict:
         "outbound_qty": item.outbound_qty,
         "inbound_qty": item.inbound_qty,
         "inbound_ids": item.inbound_id_list,
+        "owner": item.owner,
+        "remark": item.remark,
         "raw_data": json.loads(item.raw_data) if item.raw_data else None,
         "imported_at": item.imported_at,
     }
@@ -229,6 +231,48 @@ def delete_all_inventory(db: Session) -> int:
     db.query(Inventory).delete()
     db.commit()
     return count
+
+
+def backup_remarks(db: Session) -> Dict[Tuple[int, str], str]:
+    """
+    备份现有库存备注：{(warehouse_id, sku): remark}。
+    import-all 清空重建前调用，导入后按 仓库+SKU 相同回填保留（见 restore_remarks）。
+    """
+    rows = db.query(Inventory.warehouse_id, Inventory.sku, Inventory.remark).filter(
+        Inventory.remark.isnot(None), Inventory.remark != ""
+    ).all()
+    return {(wh_id, sku or ""): remark for wh_id, sku, remark in rows}
+
+
+def restore_remarks(db: Session, backup: Dict[Tuple[int, str], str]) -> int:
+    """
+    按备份恢复备注：仓库+SKU 相同的行回填 remark，返回更新行数。
+    """
+    if not backup:
+        return 0
+    updated = 0
+    invs = db.query(Inventory).all()
+    for inv in invs:
+        remark = backup.get((inv.warehouse_id, inv.sku or ""))
+        if remark:
+            inv.remark = remark
+            updated += 1
+    if updated:
+        db.commit()
+    return updated
+
+
+def update_inventory_remark(db: Session, inventory_id: int, remark: Optional[str]) -> Optional[Inventory]:
+    """
+    更新单条库存备注（清空传 None 或空串）。返回 None 表示记录不存在。
+    长度上限 500 字符与模型列一致。
+    """
+    inv = db.query(Inventory).filter(Inventory.id == inventory_id).first()
+    if not inv:
+        return None
+    inv.remark = (remark or "").strip()[:500] or None
+    db.commit()
+    return inv
 
 
 # ========== 汇总 ==========

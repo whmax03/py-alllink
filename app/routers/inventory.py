@@ -13,6 +13,7 @@ from app.crud import inventory as crud_inventory
 from app.crud import rbac as crud_rbac
 from app.schemas.inventory import ImportResult
 from app.models.user import User
+from app.core.owner_backfill import refresh_owner_map, apply_owner_backfill
 
 router = APIRouter(prefix="/inventory", tags=["库存管理"])
 
@@ -35,6 +36,9 @@ def import_all(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"读取Excel失败: {str(e)}")
 
+    # 清空前备份备注：仓库+SKU 相同的行导入后自动保留
+    remark_backup = crud_inventory.backup_remarks(db)
+
     # 清空旧库存
     deleted = crud_inventory.delete_all_inventory(db)
 
@@ -52,6 +56,12 @@ def import_all(
     # 批量导入
     stats = crud_inventory.batch_import(db, data)
 
+    # 责任人回填：导入清空重建后，按 sku_owner_map 自动补回（幂等覆盖式）
+    owner_stats = apply_owner_backfill(db)
+
+    # 备注恢复：仓库+SKU 相同的行回填（数据相同保留备注）
+    remark_restored = crud_inventory.restore_remarks(db, remark_backup)
+
     return {
         "deleted_old": deleted,
         "deleted_jindie_warehouses": jindie_wh_count,
@@ -59,7 +69,9 @@ def import_all(
         "warehouses": stats["warehouses"],
         "goods": stats["goods"],
         "sku_mappings": stats["sku_mappings"],
-        "message": f"成功导入 {stats['total']} 条库存（仓库 {stats['warehouses']} 个，商品 {stats['goods']} 个，清理旧金蝶海外仓 {jindie_wh_count} 个）",
+        "owner_backfilled": owner_stats["updated"],
+        "remark_restored": remark_restored,
+        "message": f"成功导入 {stats['total']} 条库存（仓库 {stats['warehouses']} 个，商品 {stats['goods']} 个，清理旧金蝶海外仓 {jindie_wh_count} 个，责任人回填 {owner_stats['updated']} 行，备注保留 {remark_restored} 行）",
     }
 
 
@@ -84,6 +96,61 @@ def import_domestic(
         imported_rows=stats["total"], skipped_rows=0,
         message=f"成功导入 {stats['total']} 条（仓库 {stats['warehouses']} 个，商品 {stats['goods']} 个）",
     )
+
+
+@router.post("/owner-map/refresh", summary="刷新责任人映射并回填（读Excel）")
+def owner_map_refresh(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("data:import")),
+):
+    """
+    读取 责任人对应关系/亚马逊SKU明细.xlsx → upsert sku_owner_map（SKU与ASIN都入表）
+    → 立即按映射回填 inventory.owner。
+    Excel 更新后调用一次即可；一键导入后由 import-all 自动回填，无需手动调用。
+    """
+    try:
+        map_stats = refresh_owner_map(db)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取责任人Excel失败: {str(e)}")
+
+    apply_stats = apply_owner_backfill(db)
+    return {
+        "map_rows": map_stats["map_rows"],
+        "backfilled": apply_stats["updated"],
+        "by_path": apply_stats["by_path"],
+        "message": (
+            f"映射表已刷新 {map_stats['map_rows']} 条，回填库存 {apply_stats['updated']} 行"
+            f"（{apply_stats['by_path']}）"
+        ),
+    }
+
+
+# ========== 备注接口 ==========
+
+@router.put("/remark", summary="更新库存备注")
+def update_remark(
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("data:import")),
+):
+    """
+    更新单条库存备注：{inventory_id: int, remark: str}（清空传空串或 null）。
+    备注手工维护，import-all 重新导入时按 仓库+SKU 相同自动保留。
+    """
+    inventory_id = data.get("inventory_id")
+    if not isinstance(inventory_id, int):
+        raise HTTPException(status_code=400, detail="inventory_id 必填且为整数")
+    remark = data.get("remark")
+    if remark is not None and not isinstance(remark, str):
+        raise HTTPException(status_code=400, detail="remark 必须为字符串")
+    if remark is not None and len(remark) > 500:
+        raise HTTPException(status_code=400, detail="备注最长 500 字符")
+    inv = crud_inventory.update_inventory_remark(db, inventory_id, remark)
+    if not inv:
+        raise HTTPException(status_code=404, detail="库存记录不存在")
+    return {"inventory_id": inv.id, "remark": inv.remark}
 
 
 # ========== 查询接口 ==========
