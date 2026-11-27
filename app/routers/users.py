@@ -1,7 +1,7 @@
 """
 用户管理路由（账号管理页后端接口）：
 - 所有接口要求 admin 角色（require_role 守卫）
-- 新增账号（姓名 + 邮箱 + 密码）/ 查询账号 / 删除账号 / 重置账号密码
+- 新增账号（姓名 + 邮箱 + 密码）/ 查询账号 / 删除账号 / 重置账号密码 / 修改姓名 + 姓名修改日志
 - 所有返回只包含安全字段（不含 password_hash）
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 
 from app.database import get_db
-from app.schemas.user import UserRegister, PasswordReset
+from app.schemas.user import UserRegister, PasswordReset, UserNameUpdate
 from app.crud import user as crud_user
 from app.crud import rbac as crud_rbac
 from app.core.security import require_role
@@ -101,3 +101,44 @@ def reset_password(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {"message": "密码重置成功"}
+
+
+@router.put("/{user_id}/name", summary="修改账号姓名（admin）")
+def update_user_name(
+    user_id: int,
+    data: UserNameUpdate,
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(require_role("admin")),
+):
+    """
+    修改账号姓名，并记录修改日志（修改前/修改后/操作人/操作时间）。
+
+    - admin 角色账号不支持修改姓名
+    - 姓名长度 2-20 个字符，且不能与当前姓名相同
+    """
+    target_roles = crud_rbac.get_user_roles(db, user_id)
+    if any(r.code == "admin" for r in target_roles):
+        raise HTTPException(status_code=400, detail="admin 账号不支持修改姓名")
+
+    try:
+        result = crud_user.update_name(
+            db, user_id=user_id, new_name=data.name, operator=current_admin,
+        )
+    except ValueError as e:
+        msg = str(e)
+        status_code = 404 if "不存在" in msg else 400
+        raise HTTPException(status_code=status_code, detail=msg)
+
+    return result
+
+
+@router.get("/{user_id}/name-logs", summary="姓名修改日志（admin）")
+def read_user_name_logs(
+    user_id: int,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_role("admin")),
+):
+    """查询指定账号的姓名修改日志（按操作时间倒序，最多 200 条）。"""
+    if crud_user.get_user(db, user_id=user_id) is None:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    return {"list": crud_user.get_name_logs(db, user_id=user_id)}

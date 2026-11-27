@@ -10,6 +10,37 @@ from datetime import datetime
 from app.models.inventory import Warehouse, Goods, SkuMapping, Inventory
 
 
+# ========== 导出列定义 ==========
+# (取值键, 表头文案)；取值键为特殊键时由 inventory_export._row_to_values 解析，
+# 其余按 Inventory 字段直取。列顺序与页面表格保持一致。
+
+DOMESTIC_EXPORT_COLUMNS: List[Tuple[str, str]] = [
+    ("sku", "SKU 编码"),
+    ("tracking_no", "计划跟踪号"),
+    ("warehouse_code", "仓库"),
+    ("platform", "平台"),
+    ("product_name", "中文品名"),
+    ("barcode", "产品条码"),
+    ("stock_qty", "可用库存"),
+    ("unit", "单位"),
+    ("remark", "备注"),
+    ("imported_at", "导入时间"),
+]
+
+OVERSEAS_EXPORT_COLUMNS: List[Tuple[str, str]] = [
+    ("sku", "SKU 编码"),
+    ("warehouse_name", "仓库类型"),
+    ("platform", "平台"),
+    ("product_name", "中文品名"),
+    ("barcode", "产品条码"),
+    ("stock_qty", "可用库存"),
+    ("unit", "单位"),
+    ("owner", "责任人"),
+    ("remark", "备注"),
+    ("imported_at", "导入时间"),
+]
+
+
 # ========== 仓库 ==========
 
 def get_or_create_warehouse(db: Session, name: str, code: str = None,
@@ -168,7 +199,9 @@ def get_inventory_page(db: Session, pageNo: int = 1, pageSize: int = 20,
                        platform: Optional[str] = None,
                        country: Optional[str] = None,
                        warehouse_type: Optional[str] = None,
-                       allowed_platforms: Optional[List[str]] = None
+                       allowed_platforms: Optional[List[str]] = None,
+                       sort_by: Optional[str] = None,
+                       sort_order: Optional[str] = None,
                        ) -> Tuple[List[dict], int, float, int, int]:
     """
     分页查询库存。
@@ -179,7 +212,11 @@ def get_inventory_page(db: Session, pageNo: int = 1, pageSize: int = 20,
     country: 按国家筛选
     warehouse_type: 按数据来源文件名筛选（如 中邮英国/AU仓库/泰国 等）
     allowed_platforms: 数据权限平台白名单（None=admin不过滤；list=仅这些平台，空list=无权限）
+    sort_by: 排序字段，目前支持 stock_qty（可用库存）；其他值忽略，退回默认排序
+    sort_order: 排序方向 asc / desc
     返回: (数据列表, 总条数, 库存数量总和, 去重仓库数, 去重SKU数)
+
+    注意：排序必须在数据库层做，前端只排当前页会得到错误的全局结果。
     """
     query = db.query(Inventory).options(joinedload(Inventory.warehouse))
 
@@ -213,7 +250,21 @@ def get_inventory_page(db: Session, pageNo: int = 1, pageSize: int = 20,
     stock_sum = query.with_entities(func.coalesce(func.sum(Inventory.stock_qty), 0)).scalar()
     warehouse_count = query.with_entities(func.count(func.distinct(Inventory.warehouse_id))).scalar() or 0
     sku_count = query.with_entities(func.count(func.distinct(Inventory.sku))).scalar() or 0
-    items = query.order_by(Inventory.id.desc()).offset((pageNo - 1) * pageSize).limit(pageSize).all()
+
+    # 排序：默认按 id 倒序（最新导入在前）
+    # 加 id 作为次级排序键，保证库存相同的行在翻页时顺序稳定、不会重复或漏行
+    order_clauses = []
+    if sort_by == "stock_qty":
+        col = Inventory.stock_qty
+        order_clauses.append(col.asc() if (sort_order or "desc").lower() == "asc" else col.desc())
+    order_clauses.append(Inventory.id.desc())
+
+    items = (
+        query.order_by(*order_clauses)
+        .offset((pageNo - 1) * pageSize)
+        .limit(pageSize)
+        .all()
+    )
     return [serialize_inventory(i) for i in items], total, float(stock_sum or 0), int(warehouse_count), int(sku_count)
 
 

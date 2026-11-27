@@ -3,12 +3,16 @@
 所有接口均需 JWT 登录，导入类接口额外需要 data:import 权限。
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import Optional
+from datetime import datetime
+from urllib.parse import quote
 
 from app.database import get_db
 from app.core.excel_reader import read_all_inventory
 from app.core.security import get_current_user, require_permission
+from app.core.inventory_export import export_inventory_xlsx, write_export_log
 from app.crud import inventory as crud_inventory
 from app.crud import rbac as crud_rbac
 from app.schemas.inventory import ImportResult
@@ -191,6 +195,8 @@ def list_domestic(
     platform: Optional[str] = Query(None, description="按平台筛选: 金蝶/澳霖"),
     country: Optional[str] = Query(None, description="按国家筛选"),
     warehouse_type: Optional[str] = Query(None, description="按数据来源文件名筛选"),
+    sort_by: Optional[str] = Query(None, description="排序字段，目前支持 stock_qty"),
+    sort_order: Optional[str] = Query(None, description="排序方向: asc/desc"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -200,6 +206,7 @@ def list_domestic(
     - country: 按国家筛选
     - warehouse_type: 按数据来源文件名筛选
     - sku: 模糊搜索SKU或名称
+    - sort_by + sort_order: 排序（如 stock_qty + asc 按可用库存升序）
     返回数据按当前用户角色平台权限强制过滤。
     """
     allowed = crud_rbac.get_visible_platforms(db, current_user.id)
@@ -207,6 +214,7 @@ def list_domestic(
         db, pageNo=pageNo, pageSize=pageSize, sku=sku,
         wh_type="domestic", platform=platform, country=country,
         warehouse_type=warehouse_type, allowed_platforms=allowed,
+        sort_by=sort_by, sort_order=sort_order,
     )
     return {"list": items, "total": total, "totalStock": stock_sum,
             "warehouseCount": wh_count, "totalSkuNum": sku_num,
@@ -221,6 +229,8 @@ def list_overseas(
     platform: Optional[str] = Query(None, description="按平台筛选: eBay/Shopee/Tiktok/亚马逊"),
     country: Optional[str] = Query(None, description="按国家筛选: 泰国/马来西亚/英国 等"),
     warehouse_type: Optional[str] = Query(None, description="按数据来源文件名筛选: 中邮英国/AU仓库/泰国 等"),
+    sort_by: Optional[str] = Query(None, description="排序字段，目前支持 stock_qty"),
+    sort_order: Optional[str] = Query(None, description="排序方向: asc/desc"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -229,6 +239,7 @@ def list_overseas(
     - platform + country: 按平台和国家组合筛选
     - warehouse_type: 按数据来源文件名筛选（如 "中邮英国" 对应 海外仓/亚马逊/中邮英国.xlsx）
     - sku: 模糊搜索SKU或名称
+    - sort_by + sort_order: 排序（如 stock_qty + desc 按可用库存降序）
     返回数据按当前用户角色平台权限强制过滤。
     """
     allowed = crud_rbac.get_visible_platforms(db, current_user.id)
@@ -236,10 +247,146 @@ def list_overseas(
         db, pageNo=pageNo, pageSize=pageSize, sku=sku,
         wh_type="overseas", platform=platform, country=country,
         warehouse_type=warehouse_type, allowed_platforms=allowed,
+        sort_by=sort_by, sort_order=sort_order,
     )
     return {"list": items, "total": total, "totalStock": stock_sum,
             "warehouseCount": wh_count, "totalSkuNum": sku_num,
             "pageNo": pageNo, "pageSize": pageSize}
+
+
+# ========== 导出接口 ==========
+
+def _export_filename(scope: str, mode: str) -> str:
+    """导出文件名：库存_国内仓_全量_20261127_134900.xlsx"""
+    label = "国内仓" if scope == "domestic" else "海外仓"
+    mode_label = "全量" if mode == "all" else "筛选"
+    return f"库存_{label}_{mode_label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+
+
+def _build_export(scope: str, params: dict, db: Session, current_user: User):
+    """
+    导出的公共流程：权限校验 → 生成 xlsx → 写审计日志 → 返回文件流。
+    平台数据权限与页面查询同源（get_visible_platforms），无法通过前端传参越权。
+    """
+    mode = params.get("mode") or "filtered"
+    if mode not in ("all", "filtered"):
+        raise HTTPException(status_code=400, detail="mode 仅支持 all（全量）或 filtered（按筛选）")
+
+    allowed = crud_rbac.get_visible_platforms(db, current_user.id)
+
+    # 先探一次是否有数据：空结果直接拒绝，避免用户只下到一个空表头文件
+    _, total, _, _, _ = crud_inventory.get_inventory_page(
+        db, pageNo=1, pageSize=1,
+        sku=params.get("sku") if mode != "all" else None,
+        wh_type=scope,
+        platform=params.get("platform") if mode != "all" else None,
+        country=params.get("country") if mode != "all" else None,
+        warehouse_type=params.get("warehouse_type") if mode != "all" else None,
+        allowed_platforms=allowed,
+    )
+    if total == 0:
+        raise HTTPException(status_code=400, detail="当前条件下没有可导出的数据")
+
+    # 记录本次导出的实际筛选口径，供审计追溯
+    filters_desc = {
+        k: v for k, v in {
+            "sku": params.get("sku"),
+            "platform": params.get("platform"),
+            "country": params.get("country"),
+            "warehouse_type": params.get("warehouse_type"),
+        }.items() if v
+    }
+
+    columns = crud_inventory.DOMESTIC_EXPORT_COLUMNS if scope == "domestic" \
+        else crud_inventory.OVERSEAS_EXPORT_COLUMNS
+
+    try:
+        buf, row_count = export_inventory_xlsx(
+            db,
+            scope=scope,
+            columns=columns,
+            sheet_title="国内仓" if scope == "domestic" else "海外仓",
+            allowed_platforms=allowed,
+            sku=params.get("sku"),
+            platform=params.get("platform"),
+            country=params.get("country"),
+            warehouse_type=params.get("warehouse_type"),
+            mode=mode,
+            filters_desc=filters_desc,
+            sort_by=params.get("sort_by"),
+            sort_order=params.get("sort_order"),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    write_export_log(
+        db, user=current_user, scope=scope, mode=mode,
+        filters_desc=filters_desc, row_count=row_count,
+    )
+
+    filename = _export_filename(scope, mode)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            # 中文文件名必须走 filename*（URL 编码），否则浏览器下载后是乱码
+            "Content-Disposition": (
+                f"attachment; filename=\"{quote(filename)}\"; "
+                f"filename*=UTF-8''{quote(filename)}"
+            ),
+            # 前端可读取导出行数用于提示（跨域下需显式暴露）
+            "Access-Control-Expose-Headers": "Content-Disposition, X-Export-Rows",
+            "X-Export-Rows": str(row_count),
+        },
+    )
+
+
+@router.get("/export/domestic", summary="导出国内仓库存（xlsx）")
+def export_domestic(
+    mode: str = Query("filtered", description="all=全量 / filtered=按筛选"),
+    sku: Optional[str] = Query(None, description="模糊搜索SKU或名称"),
+    platform: Optional[str] = Query(None, description="按平台筛选: 金蝶/澳霖"),
+    country: Optional[str] = Query(None, description="按国家筛选"),
+    warehouse_type: Optional[str] = Query(None, description="按数据来源文件名筛选"),
+    sort_by: Optional[str] = Query(None, description="排序字段，目前支持 stock_qty"),
+    sort_order: Optional[str] = Query(None, description="排序方向: asc/desc"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("export:domestic")),
+):
+    """
+    导出国内仓库存为 Excel。需要 export:domestic 权限（与海外仓导出分开控制）。
+    - mode=all 时忽略全部筛选条件，导出该用户数据权限内的全部国内仓库存
+    - mode=filtered 时按传入的筛选条件导出（与页面查询参数一致）
+    - sort_by/sort_order 与页面当前排序保持一致
+    """
+    return _build_export("domestic", {
+        "mode": mode, "sku": sku, "platform": platform,
+        "country": country, "warehouse_type": warehouse_type,
+        "sort_by": sort_by, "sort_order": sort_order,
+    }, db, current_user)
+
+
+@router.get("/export/overseas", summary="导出海外仓库存（xlsx）")
+def export_overseas(
+    mode: str = Query("filtered", description="all=全量 / filtered=按筛选"),
+    sku: Optional[str] = Query(None, description="模糊搜索SKU或名称"),
+    platform: Optional[str] = Query(None, description="按平台筛选: eBay/Shopee/Tiktok/亚马逊"),
+    country: Optional[str] = Query(None, description="按国家筛选"),
+    warehouse_type: Optional[str] = Query(None, description="按数据来源文件名筛选"),
+    sort_by: Optional[str] = Query(None, description="排序字段，目前支持 stock_qty"),
+    sort_order: Optional[str] = Query(None, description="排序方向: asc/desc"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("export:overseas")),
+):
+    """
+    导出海外仓库存为 Excel。需要 export:overseas 权限（与国内仓导出分开控制）。
+    参数口径与 /inventory/overseas 查询完全一致，含排序。
+    """
+    return _build_export("overseas", {
+        "mode": mode, "sku": sku, "platform": platform,
+        "country": country, "warehouse_type": warehouse_type,
+        "sort_by": sort_by, "sort_order": sort_order,
+    }, db, current_user)
 
 
 # ========== 仓库列表 ==========

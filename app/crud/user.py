@@ -1,9 +1,11 @@
 from sqlalchemy.orm import Session
 from typing import List, Optional
+from datetime import datetime
 
 from sqlalchemy import or_
 
 from app.models.user import User
+from app.models.user_log import UserNameChangeLog
 from app.models.rbac import UserRole, Role
 from app.schemas.user import UserCreate, UserRegister
 from app.core.security import hash_password, verify_password
@@ -170,3 +172,73 @@ def reset_password(db: Session, user_id: int, new_password: str) -> User:
     db.commit()
     db.refresh(user)
     return user
+
+
+def update_name(
+    db: Session,
+    user_id: int,
+    new_name: str,
+    operator: Optional[User] = None,
+) -> dict:
+    """
+    管理员修改账号姓名，并写入姓名修改日志。
+
+    - 账号不存在 → ValueError
+    - 姓名为空 / 超长 → ValueError
+    - 姓名未变化 → 不写库、不写日志，返回 changed=False
+    - 返回 {id, name, old_name, changed}
+    """
+    new_name = (new_name or "").strip()
+    if not new_name:
+        raise ValueError("姓名不能为空")
+    if len(new_name) < 2 or len(new_name) > 20:
+        raise ValueError("姓名长度 2-20 个字符")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise ValueError(f"用户 ID {user_id} 不存在")
+
+    old_name = user.name or ""
+    if old_name == new_name:
+        return {"id": user.id, "name": user.name, "old_name": old_name, "changed": False}
+
+    user.name = new_name
+    db.add(
+        UserNameChangeLog(
+            user_id=user.id,
+            old_name=old_name,
+            new_name=new_name,
+            operator_id=operator.id if operator else None,
+            operator_name=operator.name if operator else None,
+            operator_email=operator.email if operator else None,
+            created_at=datetime.now(),
+        )
+    )
+    # 姓名与日志同一事务提交：日志写不进去就不落姓名，保证可追溯
+    db.commit()
+    db.refresh(user)
+    return {"id": user.id, "name": user.name, "old_name": old_name, "changed": True}
+
+
+def get_name_logs(db: Session, user_id: int, limit: int = 200) -> List[dict]:
+    """查询某账号的姓名修改日志（按操作时间倒序）。"""
+    rows = (
+        db.query(UserNameChangeLog)
+        .filter(UserNameChangeLog.user_id == user_id)
+        .order_by(UserNameChangeLog.created_at.desc(), UserNameChangeLog.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "user_id": r.user_id,
+            "old_name": r.old_name,
+            "new_name": r.new_name,
+            "operator_id": r.operator_id,
+            "operator_name": r.operator_name or r.operator_email or "-",
+            "operator_email": r.operator_email,
+            "created_at": r.created_at.isoformat(sep=" ", timespec="seconds") if r.created_at else None,
+        }
+        for r in rows
+    ]

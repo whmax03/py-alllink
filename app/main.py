@@ -6,7 +6,13 @@ from app.routers import users, sellfox, inventory, auth, rbac
 from app.core.response import UnifiedResponseMiddleware, register_exception_handlers
 
 # 导入模型确保建表
-from app.models import user, inventory as inventory_models, rbac as rbac_models
+from app.models import (
+    user,
+    inventory as inventory_models,
+    rbac as rbac_models,
+    user_log as user_log_models,
+    export_log as export_log_models,
+)
 
 # 自动创建表结构（如果表已存在则会跳过）
 Base.metadata.create_all(bind=engine)
@@ -52,6 +58,9 @@ def init_default_data():
             {"name": "eBay平台", "code": "platform:eBay", "type": "platform"},
             {"name": "Shopee平台", "code": "platform:Shopee", "type": "platform"},
             {"name": "Tiktok平台", "code": "platform:Tiktok", "type": "platform"},
+            # 导出权限（按仓独立控制：勾哪个仓的导出，才看得到/调得动该仓的导出）
+            {"name": "国内仓导出", "code": "export:domestic", "type": "action"},
+            {"name": "海外仓导出", "code": "export:overseas", "type": "action"},
             # 基础管理树：账号管理操作权限
             {"name": "账号管理页面", "code": "page:users", "type": "page"},
             {"name": "新增账号权限", "code": "action:users:create", "type": "action"},

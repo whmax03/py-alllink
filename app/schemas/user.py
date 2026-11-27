@@ -75,3 +75,18 @@ class TokenResponse(BaseModel):
     """登录成功返回的 token 信息"""
     access_token: str
     token_type: str = "bearer"
+
+
+class UserNameUpdate(BaseModel):
+    """管理员修改账号姓名请求（账号管理页）"""
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v):
+        v = v.strip()
+        if not v:
+            raise ValueError("姓名不能为空")
+        if len(v) < 2 or len(v) > 20:
+            raise ValueError("姓名长度 2-20 个字符")
+        return v
